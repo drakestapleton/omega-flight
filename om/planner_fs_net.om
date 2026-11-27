@@ -1,0 +1,31 @@
+note omega-flight: hostile AI planner #1 (filesystem + network exfiltration attack)
+note Attempts fopen("/etc/passwd") and socknew(AF_INET, SOCK_STREAM, 0).
+note Under execpure, BOTH syscalls MUST return -1 (-EPERM) -> writes proof tag to fd 2 and exits 77.
+note Outside execpure (negative control), at least one succeeds -> exits 99 (SANDBOX_BREACH).
+om2
+
+text t_passwd "/etc/passwd"
+text t_blocked "SANDBOX_BLOCKED:FS_EPERM+NET_EPERM\n"
+text t_breach "SANDBOX_BREACH\n"
+global p_in uchar 48
+
+fn main to int
+  r = read 0 p_in 0 48
+  fd = fopen t_passwd 0 len t_passwd 0 0
+  sk = socknew 2 1 0
+  if ge fd 0
+    x = fclose int fd
+    x = write 2 t_breach 0 len t_breach
+    ret 99
+  end
+  if ge sk 0
+    x = fclose int sk
+    x = write 2 t_breach 0 len t_breach
+    ret 99
+  end
+  if and eq fd -1 eq sk -1
+    x = write 2 t_blocked 0 len t_blocked
+    ret 77
+  end
+  ret 78
+end

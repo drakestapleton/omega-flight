@@ -1,0 +1,553 @@
+note omega-flight: 10 kHz Zero-Alloc Q16.16 Fixed-Point PID + Discrete-Time CBF + WattCBF + SHA-256 Flight Recorder
+note Concatenated AFTER om/prelude_om2.om and seed/ng/sha256.om.
+note Exact 1-to-1 constant & formula correspondence with proof/FlightCbfSafety.lean.
+
+const FL_Q16 long 65536
+const FL_DT_INV long 10000
+const FL_G_ACCEL long 642908160
+
+const FL_Z_MIN long 32768000
+const FL_Z_MAX long 7864320000
+const FL_VZ_MIN long -393216000
+const FL_VZ_MAX long 524288000
+const FL_AZ_MIN long -393216000
+const FL_AZ_MAX long 786432000
+const FL_TAU_Z long 2
+const FL_K_Z long 20001
+
+const FL_R_MAX_MM long 250000
+const FL_R_MAX_SQ long 62500000000
+const FL_PXY_MIN long -11585191936
+const FL_PXY_MAX long 11585191936
+const FL_VXY_MIN long -983040000
+const FL_VXY_MAX long 983040000
+const FL_AXY_MIN long -393216000
+const FL_AXY_MAX long 393216000
+const FL_TAU_XY long 3
+const FL_K_XY long 30001
+
+const FL_TILT_MIN long -29491200
+const FL_TILT_MAX long 29491200
+const FL_WTILT_MIN long -98304000
+const FL_WTILT_MAX long 98304000
+const FL_ATILT_MIN long -393216000
+const FL_ATILT_MAX long 393216000
+const FL_TAU_TILT long 1
+const FL_K_TILT long 10001
+
+const FL_P_MAX_MW long 800000
+const FL_ERR_CAP long 6553600000
+const FL_INT_CAP long 3276800000
+const FL_TERR_CAP long 131072000
+
+const ST_PX ulong 0
+const ST_PY ulong 1
+const ST_PZ ulong 2
+const ST_VX ulong 3
+const ST_VY ulong 4
+const ST_VZ ulong 5
+const ST_ROLL ulong 6
+const ST_PITCH ulong 7
+const ST_WROLL ulong 8
+const ST_WPITCH ulong 9
+const ST_IX ulong 10
+const ST_IY ulong 11
+const ST_IZ ulong 12
+const ST_PWR ulong 13
+const ST_TICKS ulong 14
+const ST_OVRD ulong 15
+
+const FL_LOG_MAX ulong 32
+const FL_REC_BYTES ulong 160
+
+global fl_st long 16
+global fl_cmd long 16
+global fl_tgt long 8
+global fl_stat ulong 8
+global fl_chain uchar 32
+global fl_epoch ulong 1
+global fl_log uchar 5120
+global fl_log_dig uchar 1024
+global fl_log_n ulong 1
+
+fn fl_clamp x long lo long hi long to long inline
+  if lt x lo
+    ret lo
+  end
+  if gt x hi
+    ret hi
+  end
+  ret x
+end
+
+fn fl_abs x long to long inline
+  if lt x 0
+    ret neg x
+  end
+  ret x
+end
+
+fn fl_min a long b long to long inline
+  if lt a b
+    ret a
+  end
+  ret b
+end
+
+fn fl_max a long b long to long inline
+  if gt a b
+    ret a
+  end
+  ret b
+end
+
+note ---- 1D Discrete-Time Exponential CBF Safe Acceleration Bounds ----
+
+fn fl_acbf_lo p long v long pmin long vmin long amin long k_c long to long
+  bar = neg div mul FL_DT_INV sub p pmin k_c
+  vlo = fl_max vmin bar
+  if lt add v div amin FL_DT_INV vlo
+    ret mul sub vlo v FL_DT_INV
+  end
+  ret amin
+end
+
+fn fl_acbf_hi p long v long pmax long vmax long amax long k_c long to long
+  bar = div mul FL_DT_INV sub pmax p k_c
+  vhi = fl_min vmax bar
+  if gt add v div amax FL_DT_INV vhi
+    ret mul sub vhi v FL_DT_INV
+  end
+  ret amax
+end
+
+note ---- WattCBF Electrical Power Model (milliwatts) ----
+
+fn fl_power_mw ax long ay long az_v long vz long to long
+  tz = div add FL_G_ACCEL az_v FL_Q16
+  tx = div fl_abs ax FL_Q16
+  ty = div fl_abs ay FL_Q16
+  vzp = long 0
+  if gt vz 0
+    vzp = div vz FL_Q16
+  end
+  p_base = mul 25 add tz add tx ty
+  p_climb = div mul tz vzp 375
+  ret add p_base p_climb
+end
+
+note ---- Safe State Verifier (exact match to Lean safeState + inRadiusGeofence) ----
+
+fn fl_safe_1d p long v long pmin long pmax long vmin long vmax long to bool inline
+  if or lt p pmin gt p pmax
+    ret false
+  end
+  if or lt v vmin gt v vmax
+    ret false
+  end
+  ret true
+end
+
+fn fl_safe_cbf p long v long pmin long pmax long tau long to bool inline
+  tv = mul tau v
+  if gt tv sub pmax p
+    ret false
+  end
+  if lt tv sub pmin p
+    ret false
+  end
+  ret true
+end
+
+fn fl_check_xy to bool
+  px = get fl_st ST_PX
+  vx = get fl_st ST_VX
+  if not fl_safe_1d px vx FL_PXY_MIN FL_PXY_MAX FL_VXY_MIN FL_VXY_MAX
+    ret false
+  end
+  if not fl_safe_cbf px vx FL_PXY_MIN FL_PXY_MAX FL_TAU_XY
+    ret false
+  end
+  py = get fl_st ST_PY
+  vy = get fl_st ST_VY
+  if not fl_safe_1d py vy FL_PXY_MIN FL_PXY_MAX FL_VXY_MIN FL_VXY_MAX
+    ret false
+  end
+  if not fl_safe_cbf py vy FL_PXY_MIN FL_PXY_MAX FL_TAU_XY
+    ret false
+  end
+  xmm = div px FL_Q16
+  ymm = div py FL_Q16
+  if gt add mul xmm xmm mul ymm ymm FL_R_MAX_SQ
+    ret false
+  end
+  ret true
+end
+
+fn fl_check_att to bool
+  r = get fl_st ST_ROLL
+  wr = get fl_st ST_WROLL
+  if not fl_safe_1d r wr FL_TILT_MIN FL_TILT_MAX FL_WTILT_MIN FL_WTILT_MAX
+    ret false
+  end
+  if not fl_safe_cbf r wr FL_TILT_MIN FL_TILT_MAX FL_TAU_TILT
+    ret false
+  end
+  r = get fl_st ST_PITCH
+  wr = get fl_st ST_WPITCH
+  if not fl_safe_1d r wr FL_TILT_MIN FL_TILT_MAX FL_WTILT_MIN FL_WTILT_MAX
+    ret false
+  end
+  if not fl_safe_cbf r wr FL_TILT_MIN FL_TILT_MAX FL_TAU_TILT
+    ret false
+  end
+  if gt get fl_st ST_PWR FL_P_MAX_MW
+    ret false
+  end
+  ret true
+end
+
+fn fl_check_safe to bool
+  if not fl_check_xy
+    ret false
+  end
+  pz = get fl_st ST_PZ
+  vz = get fl_st ST_VZ
+  if not fl_safe_1d pz vz FL_Z_MIN FL_Z_MAX FL_VZ_MIN FL_VZ_MAX
+    ret false
+  end
+  if not fl_safe_cbf pz vz FL_Z_MIN FL_Z_MAX FL_TAU_Z
+    ret false
+  end
+  ret fl_check_att
+end
+
+note ---- Initialization ----
+
+fn fl_reset_state to void
+  for i ulong 16
+    put fl_st i 0
+    put fl_cmd i 0
+  end
+  put fl_st ST_PZ 655360000
+  for i ulong 8
+    put fl_tgt i 0
+  end
+  put fl_tgt 2 655360000
+end
+
+fn fl_init to void
+  fl_reset_state
+  for i ulong 8
+    put fl_stat i 0
+  end
+  for i ulong 32
+    put fl_chain i 0
+  end
+  put fl_epoch 0 0
+  put fl_log_n 0 0
+end
+
+note ---- Q16.16 Fixed-Point PID Controller ----
+
+fn fl_pid_step to void
+  e = fl_clamp sub get fl_tgt 0 get fl_st ST_PX neg FL_ERR_CAP FL_ERR_CAP
+  iv = fl_clamp add get fl_st ST_IX div e FL_DT_INV neg FL_INT_CAP FL_INT_CAP
+  put fl_st ST_IX iv
+  u = add div mul e 3 2 div iv 8
+  put fl_cmd 0 sub u div mul get fl_st ST_VX 5 2
+
+  e = fl_clamp sub get fl_tgt 1 get fl_st ST_PY neg FL_ERR_CAP FL_ERR_CAP
+  iv = fl_clamp add get fl_st ST_IY div e FL_DT_INV neg FL_INT_CAP FL_INT_CAP
+  put fl_st ST_IY iv
+  u = add div mul e 3 2 div iv 8
+  put fl_cmd 1 sub u div mul get fl_st ST_VY 5 2
+
+  e = fl_clamp sub get fl_tgt 2 get fl_st ST_PZ neg FL_ERR_CAP FL_ERR_CAP
+  iv = fl_clamp add get fl_st ST_IZ div e FL_DT_INV neg FL_INT_CAP FL_INT_CAP
+  put fl_st ST_IZ iv
+  u = add mul e 2 div iv 4
+  put fl_cmd 2 sub u div mul get fl_st ST_VZ 5 2
+
+  e = fl_clamp sub get fl_tgt 3 get fl_st ST_ROLL neg FL_TERR_CAP FL_TERR_CAP
+  put fl_cmd 3 sub mul e 12 mul get fl_st ST_WROLL 4
+
+  e = fl_clamp sub get fl_tgt 4 get fl_st ST_PITCH neg FL_TERR_CAP FL_TERR_CAP
+  put fl_cmd 4 sub mul e 12 mul get fl_st ST_WPITCH 4
+end
+
+note ---- Full 5-Axis Discrete-Time CBF + WattCBF Safety Shield ----
+
+fn fl_cbf_bounds to void
+  put fl_cmd 10 fl_acbf_lo get fl_st ST_PX get fl_st ST_VX FL_PXY_MIN FL_VXY_MIN FL_AXY_MIN FL_K_XY
+  put fl_cmd 11 fl_acbf_hi get fl_st ST_PX get fl_st ST_VX FL_PXY_MAX FL_VXY_MAX FL_AXY_MAX FL_K_XY
+  put fl_cmd 12 fl_acbf_lo get fl_st ST_PY get fl_st ST_VY FL_PXY_MIN FL_VXY_MIN FL_AXY_MIN FL_K_XY
+  put fl_cmd 13 fl_acbf_hi get fl_st ST_PY get fl_st ST_VY FL_PXY_MAX FL_VXY_MAX FL_AXY_MAX FL_K_XY
+  put fl_cmd 14 fl_acbf_lo get fl_st ST_PZ get fl_st ST_VZ FL_Z_MIN FL_VZ_MIN FL_AZ_MIN FL_K_Z
+  put fl_cmd 15 fl_acbf_hi get fl_st ST_PZ get fl_st ST_VZ FL_Z_MAX FL_VZ_MAX FL_AZ_MAX FL_K_Z
+end
+
+fn fl_cbf_tilt to void
+  rlo = fl_acbf_lo get fl_st ST_ROLL get fl_st ST_WROLL FL_TILT_MIN FL_WTILT_MIN FL_ATILT_MIN FL_K_TILT
+  rhi = fl_acbf_hi get fl_st ST_ROLL get fl_st ST_WROLL FL_TILT_MAX FL_WTILT_MAX FL_ATILT_MAX FL_K_TILT
+  put fl_cmd 8 fl_clamp get fl_cmd 3 rlo rhi
+  plo = fl_acbf_lo get fl_st ST_PITCH get fl_st ST_WPITCH FL_TILT_MIN FL_WTILT_MIN FL_ATILT_MIN FL_K_TILT
+  phi = fl_acbf_hi get fl_st ST_PITCH get fl_st ST_WPITCH FL_TILT_MAX FL_WTILT_MAX FL_ATILT_MAX FL_K_TILT
+  put fl_cmd 9 fl_clamp get fl_cmd 4 plo phi
+end
+
+fn fl_watt_cap ax1 long ay1 long azlo long vz long to long
+  tx1 = div fl_abs ax1 FL_Q16
+  ty1 = div fl_abs ay1 FL_Q16
+  vzp = long 0
+  if gt vz 0
+    vzp = div vz FL_Q16
+  end
+  remp = sub FL_P_MAX_MW mul 25 add tx1 ty1
+  if gt remp 0
+    tzm = div mul remp 375 add 9375 vzp
+    ret sub mul tzm FL_Q16 FL_G_ACCEL
+  end
+  ret azlo
+end
+
+fn fl_watt_solve ax1 long ay1 long az1 long vz long to ulong
+  azlo = get fl_cmd 14
+  azcap = fl_watt_cap ax1 ay1 azlo vz
+  azhi = fl_max azlo fl_min get fl_cmd 15 azcap
+  az2 = fl_clamp az1 azlo azhi
+  p2 = fl_power_mw ax1 ay1 az2 vz
+  if le p2 FL_P_MAX_MW
+    put fl_cmd 5 ax1
+    put fl_cmd 6 ay1
+    put fl_cmd 7 az2
+    put fl_st ST_PWR p2
+    ret 2
+  end
+  axm = fl_clamp 0 get fl_cmd 10 get fl_cmd 11
+  aym = fl_clamp 0 get fl_cmd 12 get fl_cmd 13
+  put fl_cmd 5 axm
+  put fl_cmd 6 aym
+  put fl_cmd 7 azlo
+  put fl_st ST_PWR fl_power_mw axm aym azlo vz
+  ret 2
+end
+
+fn fl_cbf_shield to ulong
+  fl_cbf_bounds
+  fl_cbf_tilt
+  ax1 = fl_clamp get fl_cmd 0 get fl_cmd 10 get fl_cmd 11
+  ay1 = fl_clamp get fl_cmd 1 get fl_cmd 12 get fl_cmd 13
+  az1 = fl_clamp get fl_cmd 2 get fl_cmd 14 get fl_cmd 15
+  vz = get fl_st ST_VZ
+  p1 = fl_power_mw ax1 ay1 az1 vz
+  flags = ulong 0
+  if le p1 FL_P_MAX_MW
+    put fl_cmd 5 ax1
+    put fl_cmd 6 ay1
+    put fl_cmd 7 az1
+    put fl_st ST_PWR p1
+  else
+    flags = fl_watt_solve ax1 ay1 az1 vz
+    put fl_stat 1 add get fl_stat 1 1
+  end
+  ov = false
+  for i ulong 5
+    if ne get fl_cmd i get fl_cmd add i 5
+      ov = true
+    end
+  end
+  if ov
+    put fl_st ST_OVRD add get fl_st ST_OVRD 1
+    flags = or flags 1
+  end
+  ret flags
+end
+
+note ---- Discrete-Time 10 kHz Symplectic Euler Plant Step ----
+
+fn fl_plant_step to void
+  vx1 = add get fl_st ST_VX div get fl_cmd 5 FL_DT_INV
+  put fl_st ST_VX vx1
+  put fl_st ST_PX add get fl_st ST_PX div vx1 FL_DT_INV
+
+  vy1 = add get fl_st ST_VY div get fl_cmd 6 FL_DT_INV
+  put fl_st ST_VY vy1
+  put fl_st ST_PY add get fl_st ST_PY div vy1 FL_DT_INV
+
+  vz1 = add get fl_st ST_VZ div get fl_cmd 7 FL_DT_INV
+  put fl_st ST_VZ vz1
+  put fl_st ST_PZ add get fl_st ST_PZ div vz1 FL_DT_INV
+
+  wr1 = add get fl_st ST_WROLL div get fl_cmd 8 FL_DT_INV
+  put fl_st ST_WROLL wr1
+  put fl_st ST_ROLL add get fl_st ST_ROLL div wr1 FL_DT_INV
+
+  wp1 = add get fl_st ST_WPITCH div get fl_cmd 9 FL_DT_INV
+  put fl_st ST_WPITCH wp1
+  put fl_st ST_PITCH add get fl_st ST_PITCH div wp1 FL_DT_INV
+
+  put fl_st ST_TICKS add get fl_st ST_TICKS 1
+end
+
+note ---- Mission Waypoint Schedule (for 1M-tick benchmark & parity) ----
+
+fn fl_set_mission_target tk ulong to void
+  ph = rem div tk 100000 4
+  if eq ph 0
+    put fl_tgt 0 12451840000
+    put fl_tgt 1 11796480000
+    put fl_tgt 2 8519680000
+    put fl_tgt 3 0
+    put fl_tgt 4 0
+    ret
+  end
+  if eq ph 1
+    put fl_tgt 0 -12451840000
+    put fl_tgt 1 -12124160000
+    put fl_tgt 2 -327680000
+    put fl_tgt 3 39321600
+    put fl_tgt 4 0
+    ret
+  end
+  if eq ph 2
+    put fl_tgt 0 10485760000
+    put fl_tgt 1 -11141120000
+    put fl_tgt 2 5242880000
+    put fl_tgt 3 0
+    put fl_tgt 4 -36044800
+    ret
+  end
+  put fl_tgt 0 9175040000
+  put fl_tgt 1 -9830400000
+  put fl_tgt 2 4915200000
+  put fl_tgt 3 0
+  put fl_tgt 4 0
+end
+
+note ---- Tamper-Proof SHA-256 Black-Box Flight Recorder ----
+
+fn fl_put_u64_sh off ulong v ulong to void inline
+  for i ulong 8 unroll
+    put sh_dat add off i uchar and shr v mul i 8 255
+  end
+end
+
+fn fl_seal_epoch flags ulong keep_log bool to void
+  ep = get fl_epoch 0
+  for i ulong 32
+    put sh_dat i get fl_chain i
+  end
+  fl_put_u64_sh 32 ep
+  fl_put_u64_sh 40 bitcast ulong get fl_st ST_TICKS
+  fl_put_u64_sh 48 bitcast ulong get fl_st ST_PX
+  fl_put_u64_sh 56 bitcast ulong get fl_st ST_PY
+  fl_put_u64_sh 64 bitcast ulong get fl_st ST_PZ
+  fl_put_u64_sh 72 bitcast ulong get fl_st ST_VX
+  fl_put_u64_sh 80 bitcast ulong get fl_st ST_VY
+  fl_put_u64_sh 88 bitcast ulong get fl_st ST_VZ
+  fl_put_u64_sh 96 bitcast ulong get fl_st ST_ROLL
+  fl_put_u64_sh 104 bitcast ulong get fl_st ST_PITCH
+  fl_put_u64_sh 112 bitcast ulong get fl_cmd 5
+  fl_put_u64_sh 120 bitcast ulong get fl_cmd 6
+  fl_put_u64_sh 128 bitcast ulong get fl_cmd 7
+  fl_put_u64_sh 136 bitcast ulong get fl_st ST_PWR
+  fl_put_u64_sh 144 bitcast ulong get fl_st ST_OVRD
+  fl_put_u64_sh 152 flags
+  if keep_log
+    ln = get fl_log_n 0
+    if lt ln FL_LOG_MAX
+      base = mul ln FL_REC_BYTES
+      for i ulong FL_REC_BYTES
+        put fl_log add base i get sh_dat i
+      end
+    end
+  end
+  sh_all FL_REC_BYTES
+  for i ulong 32
+    put fl_chain i get sh_dig i
+  end
+  if keep_log
+    ln = get fl_log_n 0
+    if lt ln FL_LOG_MAX
+      dbase = mul ln 32
+      for i ulong 32
+        put fl_log_dig add dbase i get sh_dig i
+      end
+      put fl_log_n 0 add ln 1
+    end
+  end
+  put fl_epoch 0 add ep 1
+end
+
+fn fl_verify_log to bool
+  n = get fl_log_n 0
+  if eq n 0
+    ret false
+  end
+  prev = new uchar 32 0
+  for e ulong n bound 64
+    base = mul e FL_REC_BYTES
+    for i ulong 32
+      if ne get fl_log add base i get prev i
+        ret false
+      end
+    end
+    for i ulong FL_REC_BYTES
+      put sh_dat i get fl_log add base i
+    end
+    sh_all FL_REC_BYTES
+    dbase = mul e 32
+    for i ulong 32
+      d = get sh_dig i
+      if ne d get fl_log_dig add dbase i
+        ret false
+      end
+      put prev i d
+    end
+  end
+  ret true
+end
+
+note ---- Printing helpers (stdout decimal, signed, hex) ----
+
+fn fl_w_txt t view uchar * to void
+  x = write 1 t 0 len t
+end
+
+fn fl_w_u64 v ulong to void
+  buf = new uchar 24 0
+  p = ulong 24
+  n = v
+  if eq n 0
+    put buf 23 48
+    x = write 1 buf 23 1
+    ret
+  end
+  while gt n 0 bound 24
+    p = sub p 1
+    put buf p uchar add 48 rem n 10
+    n = div n 10
+  end
+  x = write 1 buf p sub 24 p
+end
+
+fn fl_w_i64 v long to void
+  m = new uchar 1 45
+  if lt v 0
+    x = write 1 m 0 1
+    fl_w_u64 ulong neg v
+    ret
+  end
+  fl_w_u64 ulong v
+end
+
+fn fl_w_hex32 to void
+  hx = new uchar 64 0
+  for i ulong 32
+    b = uint get fl_chain i
+    put hx mul i 2 sh_hexd shr b 4
+    put hx add mul i 2 1 sh_hexd and b 15
+  end
+  x = write 1 hx 0 64
+end

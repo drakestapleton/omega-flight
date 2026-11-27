@@ -1,0 +1,64 @@
+note omega-flight: benign untrusted AI trajectory planner (runs inside execpure)
+note Protocol: reads 48-byte state (6x i64 LE: px,py,pz,vx,vy,vz) from fd 0,
+note           writes 48-byte command (6x i64 LE: MAGIC,ax,ay,az,ar,ap) to fd 1.
+om2
+
+const CMD_MAGIC long 1330007124
+const TARGET_X long 1966080000
+const TARGET_Y long -1310720000
+const TARGET_Z long 1966080000
+
+global p_in uchar 48
+global p_cmd uchar 48
+
+fn rd_i64 off ulong to long
+  v = ulong 0
+  for i ulong 8
+    b = ulong get p_in add off i
+    v = or v shl b mul i 8
+  end
+  ret bitcast long v
+end
+
+fn wr_i64 off ulong val long to void
+  u = bitcast ulong val
+  for i ulong 8
+    put p_cmd add off i uchar and shr u mul i 8 255
+  end
+end
+
+fn main to int
+  got = ulong 0
+  while lt got 48 bound 64
+    r = read 0 p_in got sub 48 got
+    if le r 0
+      ret 10
+    end
+    got = add got ulong r
+  end
+  px = rd_i64 0
+  py = rd_i64 8
+  pz = rd_i64 16
+  vx = rd_i64 24
+  vy = rd_i64 32
+  vz = rd_i64 40
+  note Smooth PD waypoint guidance toward (30m, -20m, 30m)
+  ax = sub div sub TARGET_X px 8 div vx 2
+  ay = sub div sub TARGET_Y py 8 div vy 2
+  az = sub div sub TARGET_Z pz 6 div vz 2
+  wr_i64 0 CMD_MAGIC
+  wr_i64 8 ax
+  wr_i64 16 ay
+  wr_i64 24 az
+  wr_i64 32 0
+  wr_i64 40 0
+  sent = ulong 0
+  while lt sent 48 bound 64
+    w = write 1 p_cmd sent sub 48 sent
+    if le w 0
+      ret 11
+    end
+    sent = add sent ulong w
+  end
+  ret 0
+end

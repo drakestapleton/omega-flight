@@ -1,0 +1,15 @@
+note omega-flight: hostile AI planner #3 (infinite loop / control-loop freeze attack)
+note Runs an unbounded spin loop; Omega's trap 4 (LOOP_BOUND) deterministically kills it with exit 104!
+om2
+
+global p_in uchar 48
+
+fn main to int
+  r = read 0 p_in 0 48
+  c = true
+  acc = ulong 0
+  while c
+    acc = add acc 1
+  end
+  ret int and acc 255
+end

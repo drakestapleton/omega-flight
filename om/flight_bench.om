@@ -1,0 +1,174 @@
+note omega-flight: 1,000,000-tick throughput + 10,000-tick real-time 10 kHz paced benchmark
+note Concatenated AFTER om/prelude_om2.om, seed/ng/sha256.om, and om/flight_core.om.
+
+const BM_UNPACED_N ulong 1000000
+const BM_RT_N ulong 10000
+const BM_EPOCH_STRIDE ulong 100
+const BM_RT_PERIOD_NS long 100000
+
+global bm_lat ulong 10000
+global bm_rt_lat ulong 10000
+
+text t_b1_ns "BENCH_1M_NS="
+text t_b1_tk "\nBENCH_1M_TICKS="
+text t_b1_ep "\nBENCH_1M_EPOCHS="
+text t_b1_ov "\nBENCH_1M_OVERRIDES="
+text t_b1_wt "\nBENCH_1M_WATT_CLAMPS="
+text t_b1_vl "\nBENCH_1M_VIOLATIONS="
+text t_b1_px "\nBENCH_1M_PX="
+text t_b1_py " PY="
+text t_b1_pz " PZ="
+text t_b1_vx " VX="
+text t_b1_vy " VY="
+text t_b1_vz " VZ="
+text t_b1_rl " ROLL="
+text t_b1_pt " PITCH="
+text t_b1_ch "\nBENCH_1M_CHAIN_SHA256="
+text t_rt_tot "\nRT_10K_TOTAL_NS="
+text t_rt_p50 "\nRT_10K_WORK_P50_NS="
+text t_rt_p99 "\nRT_10K_WORK_P99_NS="
+text t_rt_p999 "\nRT_10K_WORK_P999_NS="
+text t_rt_max "\nRT_10K_WORK_MAX_NS="
+text t_rt_miss "\nRT_10K_MISSED_100US="
+text t_rt_vl "\nRT_10K_VIOLATIONS="
+text t_rt_ov "\nRT_10K_OVERRIDES="
+text t_rt_ch "\nRT_10K_CHAIN_SHA256="
+text t_nl "\n"
+
+fn bm_shell_sort n ulong to void
+  gap = div n 2
+  while gt gap 0 bound 32
+    i = gap
+    while lt i n bound 10000
+      tmp = get bm_lat i
+      j = i
+      while ge j gap bound 10000
+        prev = get bm_lat sub j gap
+        if le prev tmp
+          break
+        end
+        put bm_lat j prev
+        j = sub j gap
+      end
+      put bm_lat j tmp
+      i = add i 1
+    end
+    gap = div gap 2
+  end
+end
+
+fn bm_run_1m to ulong
+  fl_init
+  viol = ulong 0
+  t0 = monons
+  for tk ulong BM_UNPACED_N bound 1000000
+    fl_set_mission_target tk
+    fl_pid_step
+    flg = fl_cbf_shield
+    fl_plant_step
+    if not fl_check_safe
+      viol = add viol 1
+    end
+    if eq rem add tk 1 BM_EPOCH_STRIDE 0
+      fl_seal_epoch flg false
+    end
+  end
+  t1 = monons
+  dt = ulong sub t1 t0
+  fl_w_txt t_b1_ns
+  fl_w_u64 dt
+  fl_w_txt t_b1_tk
+  fl_w_u64 BM_UNPACED_N
+  fl_w_txt t_b1_ep
+  fl_w_u64 get fl_epoch 0
+  fl_w_txt t_b1_ov
+  fl_w_i64 get fl_st ST_OVRD
+  fl_w_txt t_b1_wt
+  fl_w_u64 get fl_stat 1
+  fl_w_txt t_b1_vl
+  fl_w_u64 viol
+  fl_w_txt t_b1_px
+  fl_w_i64 get fl_st ST_PX
+  fl_w_txt t_b1_py
+  fl_w_i64 get fl_st ST_PY
+  fl_w_txt t_b1_pz
+  fl_w_i64 get fl_st ST_PZ
+  fl_w_txt t_b1_vx
+  fl_w_i64 get fl_st ST_VX
+  fl_w_txt t_b1_vy
+  fl_w_i64 get fl_st ST_VY
+  fl_w_txt t_b1_vz
+  fl_w_i64 get fl_st ST_VZ
+  fl_w_txt t_b1_rl
+  fl_w_i64 get fl_st ST_ROLL
+  fl_w_txt t_b1_pt
+  fl_w_i64 get fl_st ST_PITCH
+  fl_w_txt t_b1_ch
+  fl_w_hex32
+  ret viol
+end
+
+fn bm_run_rt_10k to ulong
+  fl_init
+  viol = ulong 0
+  miss = ulong 0
+  rt0 = monons
+  for tk ulong BM_RT_N bound 10000
+    rel = add rt0 mul long tk BM_RT_PERIOD_NS
+    while lt monons rel bound 1000000
+      cpurelax
+    end
+    ts = monons
+    fl_set_mission_target tk
+    fl_pid_step
+    flg = fl_cbf_shield
+    fl_plant_step
+    if not fl_check_safe
+      viol = add viol 1
+    end
+    if eq rem add tk 1 BM_EPOCH_STRIDE 0
+      fl_seal_epoch flg false
+    end
+    te = monons
+    wns = sub te ts
+    if lt wns 0
+      wns = 0
+    end
+    put bm_lat tk ulong wns
+    dl = add rel BM_RT_PERIOD_NS
+    if gt te dl
+      miss = add miss 1
+    end
+  end
+  rt1 = monons
+  bm_shell_sort BM_RT_N
+  fl_w_txt t_rt_tot
+  fl_w_u64 ulong sub rt1 rt0
+  fl_w_txt t_rt_p50
+  fl_w_u64 get bm_lat 5000
+  fl_w_txt t_rt_p99
+  fl_w_u64 get bm_lat 9900
+  fl_w_txt t_rt_p999
+  fl_w_u64 get bm_lat 9990
+  fl_w_txt t_rt_max
+  fl_w_u64 get bm_lat 9999
+  fl_w_txt t_rt_miss
+  fl_w_u64 miss
+  fl_w_txt t_rt_vl
+  fl_w_u64 viol
+  fl_w_txt t_rt_ov
+  fl_w_i64 get fl_st ST_OVRD
+  fl_w_txt t_rt_ch
+  fl_w_hex32
+  fl_w_txt t_nl
+  ret viol
+end
+
+fn main to int
+  v1 = bm_run_1m
+  v2 = bm_run_rt_10k
+  if or ne v1 0 ne v2 0
+    ret 1
+  end
+  ret 0
+end

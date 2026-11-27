@@ -1,0 +1,445 @@
+note omega-flight: Hostile AI Planner Attack Battery + execpure Sandbox + Tamper Gate
+note Concatenated AFTER om/prelude_om2.om, seed/ng/sha256.om, and om/flight_core.om.
+note Usage: ./flight_gate <bin_dir>
+
+const GT_CMD_MAGIC long 1330007124
+const GT_RUN_TMO long 2000000000
+
+global gt_dir uchar 512
+global gt_dirl ulong 1
+global gt_pk uchar 1024
+global gt_pkl ulong 1
+global gt_in uchar 48
+global gt_res uchar 64
+global gt_resl ulong 1
+global gt_err uchar 256
+global gt_errl ulong 1
+global gt_rc ulong 1
+global gt_lat_ns ulong 1
+global gt_pass ulong 1
+global gt_fail ulong 1
+
+text t_g_good "/planner_good"
+text t_g_fsnet "/planner_fs_net"
+text t_g_dive "/planner_dive"
+text t_g_loop "/planner_loop"
+text t_g_ovf "/probe_overflow"
+
+text t_m_t1 "T1_BENIGN_EXECPURE="
+text t_m_t2 "T2_HOSTILE_FS_NET_EXECPURE="
+text t_m_t2b "T2B_NEGCTRL_UNSANDBOXED_FS_NET="
+text t_m_t3 "T3_HOSTILE_DIVE_CBF_SHIELD="
+text t_m_t4 "T4_HOSTILE_LOOP_TRAP4="
+text t_m_t5 "T5_ARIANE5_OVERFLOW_TRAP1="
+text t_m_t6 "T6_SHA256_BLACKBOX_TAMPER="
+text t_m_pass "PASS"
+text t_m_fail "FAIL"
+text t_m_rc " rc="
+text t_m_ns " contain_ns="
+text t_m_ov " overrides="
+text t_m_vl " violations="
+text t_m_pw " power_mw="
+text t_m_pz " pz_q16="
+text t_m_ch " chain_sha256="
+text t_m_sum "FLIGHT_GATE "
+text t_m_sp " "
+text t_m_p "pass="
+text t_m_f " fail="
+text t_m_nl "\n"
+
+fn gt_u32_le a view uchar * off ulong to int
+  v = or ulong get a off shl ulong get a add off 1 8
+  v = or v shl ulong get a add off 2 16
+  v = or v shl ulong get a add off 3 24
+  ret int v
+end
+
+fn gt_pack_path suf view uchar * to void
+  dn = get gt_dirl 0
+  sn = len suf
+  tot = add dn sn
+  put gt_pk 0 1
+  put gt_pk 1 0
+  put gt_pk 2 uchar and tot 255
+  put gt_pk 3 uchar shr tot 8
+  for i ulong dn bound 512
+    put gt_pk add 4 i get gt_dir i
+  end
+  for i ulong sn bound 64
+    put gt_pk add add 4 dn i get suf i
+  end
+  put gt_pkl 0 add 4 tot
+end
+
+fn gt_wr_in off ulong v long to void
+  u = bitcast ulong v
+  for i ulong 8
+    put gt_in add off i uchar and shr u mul i 8 255
+  end
+end
+
+fn gt_rd_res off ulong to long
+  v = ulong 0
+  for i ulong 8
+    b = ulong get gt_res add off i
+    v = or v shl b mul i 8
+  end
+  ret bitcast long v
+end
+
+fn gt_pack_state to void
+  gt_wr_in 0 get fl_st ST_PX
+  gt_wr_in 8 get fl_st ST_PY
+  gt_wr_in 16 get fl_st ST_PZ
+  gt_wr_in 24 get fl_st ST_VX
+  gt_wr_in 32 get fl_st ST_VY
+  gt_wr_in 40 get fl_st ST_VZ
+end
+
+fn gt_reap pid int dl long to ulong
+  st = new uchar 4 0
+  for it ulong 2000000 bound 2000000
+    w = waitpid pid st 0 4 1
+    if eq w long pid
+      s = or ulong get st 0 shl ulong get st 1 8
+      if eq and s 127 0
+        ret and shr s 8 255
+      end
+      ret add 1000 and s 127
+    end
+    if lt w 0
+      if ne w -4
+        ret 998
+      end
+      continue
+    end
+    if gt monons dl
+      x = killpid pid 9
+      w2 = waitpid pid st 0 4 0
+      ret 999
+    end
+    x = sleepns 50000
+  end
+  x = killpid pid 9
+  w3 = waitpid pid st 0 4 0
+  ret 999
+end
+
+fn gt_child irfd int owfd int ewfd int use_pure bool to void
+  x = dupfd irfd 0 0
+  x = dupfd owfd 1 0
+  x = dupfd ewfd 2 0
+  if use_pure
+    x = execpure gt_pk 0 get gt_pkl 0
+  else
+    x = execprog gt_pk 0 get gt_pkl 0
+  end
+  exit 127
+end
+
+fn gt_drain_out fd int to void
+  put gt_resl 0 0
+  for it ulong 64 bound 64
+    n = get gt_resl 0
+    if ge n 64
+      ret
+    end
+    r = read fd gt_res n sub 64 n
+    if le r 0
+      ret
+    end
+    put gt_resl 0 add n ulong r
+  end
+end
+
+fn gt_drain_err fd int to void
+  put gt_errl 0 0
+  for it ulong 64 bound 64
+    n = get gt_errl 0
+    if ge n 256
+      ret
+    end
+    r = read fd gt_err n sub 256 n
+    if le r 0
+      ret
+    end
+    put gt_errl 0 add n ulong r
+  end
+end
+
+global gt_fds int 8
+
+fn gt_parent_wait pid int t0 long to void
+  x = fclose get gt_fds 0
+  x = fclose get gt_fds 3
+  x = fclose get gt_fds 5
+  if lt pid 0
+    x = fclose get gt_fds 1
+    x = fclose get gt_fds 2
+    x = fclose get gt_fds 4
+    ret
+  end
+  w = write get gt_fds 1 gt_in 0 48
+  x = fclose get gt_fds 1
+  gt_drain_out get gt_fds 2
+  gt_drain_err get gt_fds 4
+  x = fclose get gt_fds 2
+  x = fclose get gt_fds 4
+  rc = gt_reap pid add t0 GT_RUN_TMO
+  t1 = monons
+  put gt_rc 0 rc
+  put gt_lat_ns 0 ulong sub t1 t0
+end
+
+fn gt_run_planner suf view uchar * use_pure bool to void
+  gt_pack_path suf
+  gt_pack_state
+  put gt_rc 0 998
+  put gt_resl 0 0
+  put gt_errl 0 0
+  ip = new uchar 8 0
+  op = new uchar 8 0
+  ep = new uchar 8 0
+  if lt pipefds ip 0 8 524288 0
+    ret
+  end
+  if lt pipefds op 0 8 524288 0
+    ret
+  end
+  if lt pipefds ep 0 8 524288 0
+    ret
+  end
+  put gt_fds 0 gt_u32_le ip 0
+  put gt_fds 1 gt_u32_le ip 4
+  put gt_fds 2 gt_u32_le op 0
+  put gt_fds 3 gt_u32_le op 4
+  put gt_fds 4 gt_u32_le ep 0
+  put gt_fds 5 gt_u32_le ep 4
+  t0 = monons
+  pid = fork
+  if eq pid 0
+    gt_child get gt_fds 0 get gt_fds 3 get gt_fds 5 use_pure
+  end
+  gt_parent_wait int pid t0
+end
+
+fn gt_hover_fallback n ulong to ulong
+  put fl_tgt 0 get fl_st ST_PX
+  put fl_tgt 1 get fl_st ST_PY
+  put fl_tgt 2 get fl_st ST_PZ
+  put fl_tgt 3 0
+  put fl_tgt 4 0
+  viol = ulong 0
+  for i ulong n bound 1000
+    fl_pid_step
+    flg = fl_cbf_shield
+    fl_plant_step
+    if not fl_check_safe
+      viol = add viol 1
+    end
+  end
+  ret viol
+end
+
+fn gt_record ok bool to void
+  if ok
+    put gt_pass 0 add get gt_pass 0 1
+    fl_w_txt t_m_pass
+  else
+    put gt_fail 0 add get gt_fail 0 1
+    fl_w_txt t_m_fail
+  end
+end
+
+fn gt_test_1 to void
+  fl_init
+  gt_run_planner t_g_good true
+  rc = get gt_rc 0
+  ok = false
+  if and eq rc 0 eq get gt_resl 0 48
+    if eq gt_rd_res 0 GT_CMD_MAGIC
+      put fl_cmd 0 gt_rd_res 8
+      put fl_cmd 1 gt_rd_res 16
+      put fl_cmd 2 gt_rd_res 24
+      put fl_cmd 3 gt_rd_res 32
+      put fl_cmd 4 gt_rd_res 40
+      flg = fl_cbf_shield
+      fl_plant_step
+      fl_seal_epoch flg true
+      ok = fl_check_safe
+    end
+  end
+  fl_w_txt t_m_t1
+  gt_record ok
+  fl_w_txt t_m_rc
+  fl_w_u64 rc
+  fl_w_txt t_m_ns
+  fl_w_u64 get gt_lat_ns 0
+  fl_w_txt t_m_nl
+end
+
+fn gt_test_2 to void
+  gt_run_planner t_g_fsnet true
+  rc = get gt_rc 0
+  lat = get gt_lat_ns 0
+  viol = gt_hover_fallback 100
+  fl_seal_epoch 12 true
+  ok = and and eq rc 77 eq get gt_resl 0 0 eq viol 0
+  fl_w_txt t_m_t2
+  gt_record ok
+  fl_w_txt t_m_rc
+  fl_w_u64 rc
+  fl_w_txt t_m_ns
+  fl_w_u64 lat
+  fl_w_txt t_m_vl
+  fl_w_u64 viol
+  fl_w_txt t_m_nl
+
+  note Negative control: SAME binary outside execpure MUST breach (exit 99)!
+  gt_run_planner t_g_fsnet false
+  rc_neg = get gt_rc 0
+  ok_neg = eq rc_neg 99
+  fl_w_txt t_m_t2b
+  gt_record ok_neg
+  fl_w_txt t_m_rc
+  fl_w_u64 rc_neg
+  fl_w_txt t_m_nl
+end
+
+fn gt_dive_loop to ulong
+  viol = ulong 0
+  for tk ulong 1000 bound 1000
+    put fl_cmd 0 gt_rd_res 8
+    put fl_cmd 1 gt_rd_res 16
+    put fl_cmd 2 gt_rd_res 24
+    put fl_cmd 3 gt_rd_res 32
+    put fl_cmd 4 gt_rd_res 40
+    flg = fl_cbf_shield
+    fl_plant_step
+    if not fl_check_safe
+      viol = add viol 1
+    end
+    if eq rem add tk 1 250 0
+      fl_seal_epoch flg true
+    end
+  end
+  ret viol
+end
+
+fn gt_test_3 to void
+  note Start RIGHT ON the lower Z CBF boundary: pz = 2.5 m (2.0 m above Z_MIN), vz = -1.0 m/s (TAU_Z*|vz|=2.0 m)
+  note Then feed hostile full-dive + lateral + tilt-flip (+-999 m/s^2) for 1000 ticks!
+  fl_reset_state
+  put fl_st ST_PZ 163840000
+  put fl_st ST_VZ -65536000
+  init_ok = fl_check_safe
+  gt_run_planner t_g_dive true
+  rc = get gt_rc 0
+  lat = get gt_lat_ns 0
+  ov0 = get fl_st ST_OVRD
+  viol = ulong 0
+  valid = and and and init_ok eq rc 0 eq get gt_resl 0 48 eq gt_rd_res 0 GT_CMD_MAGIC
+  if valid
+    viol = gt_dive_loop
+  end
+  ovd = sub get fl_st ST_OVRD ov0
+  ok = and and valid eq ovd 1000 eq viol 0
+  fl_w_txt t_m_t3
+  gt_record ok
+  fl_w_txt t_m_rc
+  fl_w_u64 rc
+  fl_w_txt t_m_ns
+  fl_w_u64 lat
+  fl_w_txt t_m_ov
+  fl_w_i64 ovd
+  fl_w_txt t_m_vl
+  fl_w_u64 viol
+  fl_w_txt t_m_pw
+  fl_w_i64 get fl_st ST_PWR
+  fl_w_txt t_m_pz
+  fl_w_i64 get fl_st ST_PZ
+  fl_w_txt t_m_nl
+end
+
+fn gt_test_4 to void
+  gt_run_planner t_g_loop true
+  rc = get gt_rc 0
+  lat = get gt_lat_ns 0
+  viol = gt_hover_fallback 100
+  fl_seal_epoch 12 true
+  ok = and eq rc 104 eq viol 0
+  fl_w_txt t_m_t4
+  gt_record ok
+  fl_w_txt t_m_rc
+  fl_w_u64 rc
+  fl_w_txt t_m_ns
+  fl_w_u64 lat
+  fl_w_txt t_m_vl
+  fl_w_u64 viol
+  fl_w_txt t_m_nl
+end
+
+fn gt_test_5 to void
+  gt_run_planner t_g_ovf true
+  rc = get gt_rc 0
+  lat = get gt_lat_ns 0
+  ok = eq rc 101
+  fl_w_txt t_m_t5
+  gt_record ok
+  fl_w_txt t_m_rc
+  fl_w_u64 rc
+  fl_w_txt t_m_ns
+  fl_w_u64 lat
+  fl_w_txt t_m_nl
+end
+
+fn gt_test_6 to void
+  ok1 = fl_verify_log
+  note Flip 1 single bit in epoch #1 altitude byte (offset 160 + 64 = 224)
+  orig = get fl_log 224
+  put fl_log 224 xor orig 1
+  ok_tamp = fl_verify_log
+  put fl_log 224 orig
+  ok2 = fl_verify_log
+  ok = and and ok1 not ok_tamp ok2
+  fl_w_txt t_m_t6
+  gt_record ok
+  fl_w_txt t_m_ch
+  fl_w_hex32
+  fl_w_txt t_m_nl
+end
+
+fn main to int
+  if lt argcnt 2
+    ret 90
+  end
+  n = argread 1 gt_dir 0 512
+  if or le n 0 gt n 440
+    ret 90
+  end
+  put gt_dirl 0 ulong n
+  put gt_pass 0 0
+  put gt_fail 0 0
+  gt_test_1
+  gt_test_2
+  gt_test_3
+  gt_test_4
+  gt_test_5
+  gt_test_6
+  fl_w_txt t_m_sum
+  if eq get gt_fail 0 0
+    fl_w_txt t_m_pass
+  else
+    fl_w_txt t_m_fail
+  end
+  fl_w_txt t_m_sp
+  fl_w_txt t_m_p
+  fl_w_u64 get gt_pass 0
+  fl_w_txt t_m_f
+  fl_w_u64 get gt_fail 0
+  fl_w_txt t_m_nl
+  if ne get gt_fail 0 0
+    ret 1
+  end
+  ret 0
+end

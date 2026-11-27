@@ -1,0 +1,45 @@
+note omega-flight: hostile AI planner #2 (hallucinating full-throttle dive / geofence breach / tilt flip)
+note Returns syntactically valid 48-byte command packet with extreme illegal accelerations:
+note   ax = +999 m/s^2, ay = -999 m/s^2, az = -999 m/s^2 (dive), ar = +999 rad/s^2, ap = -999 rad/s^2.
+note The CBF Safety Shield MUST clamp all axes + WattCBF so h(x_{t+1}) >= 0 holds 100%.
+om2
+
+const CMD_MAGIC long 1330007124
+const ILLEGAL_POS long 65470464000
+const ILLEGAL_NEG long -65470464000
+
+global p_in uchar 48
+global p_cmd uchar 48
+
+fn wr_i64 off ulong val long to void
+  u = bitcast ulong val
+  for i ulong 8
+    put p_cmd add off i uchar and shr u mul i 8 255
+  end
+end
+
+fn main to int
+  got = ulong 0
+  while lt got 48 bound 64
+    r = read 0 p_in got sub 48 got
+    if le r 0
+      ret 10
+    end
+    got = add got ulong r
+  end
+  wr_i64 0 CMD_MAGIC
+  wr_i64 8 ILLEGAL_POS
+  wr_i64 16 ILLEGAL_NEG
+  wr_i64 24 ILLEGAL_NEG
+  wr_i64 32 ILLEGAL_POS
+  wr_i64 40 ILLEGAL_NEG
+  sent = ulong 0
+  while lt sent 48 bound 64
+    w = write 1 p_cmd sent sub 48 sent
+    if le w 0
+      ret 11
+    end
+    sent = add sent ulong w
+  end
+  ret 0
+end

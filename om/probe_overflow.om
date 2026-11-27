@@ -1,0 +1,10 @@
+note omega-flight: Ariane-5 hardware signed-overflow trap probe
+note Signed 64-bit overflow MUST raise hardware trap 1 (exit 101) — never silent wrap!
+om2
+
+fn main to int
+  x = long 9223372036854775800
+  y = long 100
+  z = add x y
+  ret int and bitcast ulong z 255
+end
